@@ -1,0 +1,5 @@
+PyPDF2
+qdrant_client
+sentence_transformers
+dotenv
+openai
