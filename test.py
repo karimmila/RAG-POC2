@@ -161,13 +161,6 @@ class QdrantTester:
         print(f"Tiempo mediano:           {median_time:.4f}s")
         print(f"Desviación estándar:      {stdev:.4f}s")
         
-        # Export to CSV
-        with open('qdrant_search_times.csv', 'w') as f:
-            f.write("search_number,search_time_seconds\n")
-            for i, t in enumerate(search_times):
-                f.write(f"{i+1},{t:.6f}\n")
-        
-        print("\nLos tiempos de búsqueda se han guardado en 'qdrant_search_times.csv'")
 
 def main():
     # Parse command line arguments
