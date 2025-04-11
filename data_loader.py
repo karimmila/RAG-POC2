@@ -7,22 +7,21 @@ from qdrant_client.http import models
 from dotenv import load_dotenv
 import uuid
 import base64
-from openai import OpenAI
 import PyPDF2  # Added for PDF processing
 
 # Define constants
-EMBEDDING_DIMENSION = 1536  # Dimension for OpenAI text-embedding-3-small model
-EMBEDDING_MODEL = "text-embedding-3-small"  # OpenAI embedding model
-BATCH_SIZE = 50
+COLLECTION_NAME = 'pdf_documents_fastembed'
+BATCH_SIZE = 50  # Number of chunks to process in each batch for embedding
 CHUNK_SIZE = 500  # Characters per chunk
 CHUNK_OVERLAP = 100  # Overlap between chunks
-COLLECTION_NAME = 'pdf_documents'
+
+# Default embedding model used by Qdrant
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+# This model produces 384-dimensional vectors
+EMBEDDING_DIMENSION = 384
 
 # Load environment variables
 load_dotenv(override=True)
-
-# Set OpenAI key explicitly in environment with correct name
-os.environ['OPENAI_API_KEY'] = os.getenv('openai_api_key')
 
 class Data:
     _instance = None
@@ -44,79 +43,27 @@ class Data:
         print(f"LOG: Data directory: {self.data_dir}")
         self.pdf_documents = self._load_pdfs()
         
-        # Initialize clients
+        # Initialize Qdrant client
+        print(f"LOG: Initializing Qdrant client")
         self.qdrant_client = QdrantClient(
             url=os.getenv('qdrantUrl'),
             api_key=os.getenv('qdrantApiKey')
         )
-        self.openai_client = OpenAI()
+        
+        # Set embedding model for Qdrant client (do this before collection creation)
+        print(f"LOG: Setting embedding model to {EMBEDDING_MODEL}")
+        self.qdrant_client.set_model(EMBEDDING_MODEL)
         
         # Ensure collection exists and is populated
-        self._ensure_collection_exists()
         self._populate_collection()
         
-        # Check Qdrant status after loading
-        self._check_qdrant_status()
         print(f"LOG: Initialized Data with directory: {self.data_dir}")
-
-    def _base64_to_uuid(self, base64_string: str) -> str:
-        """Convert base64 string to UUID."""
         try:
             base64_string = base64_string.rstrip('=')
             byte_string = base64.urlsafe_b64decode(base64_string + '=='*(-len(base64_string) % 4))
             return str(uuid.UUID(bytes=byte_string[:16]))
         except:
             return str(uuid.uuid4())
-
-    def _ensure_collection_exists(self):
-        """Create the Qdrant collection if it doesn't exist."""
-        try:
-            self.qdrant_client.get_collection(COLLECTION_NAME)
-            print(f"LOG: Collection '{COLLECTION_NAME}' already exists")
-            
-            # Check if the collection has the correct dimensions
-            collection_info = self.qdrant_client.get_collection(COLLECTION_NAME)
-            actual_dimensions = collection_info.config.params.vectors.size
-            
-            if actual_dimensions != EMBEDDING_DIMENSION:
-                print(f"LOG: WARNING - Collection dimensions mismatch!")
-                print(f"LOG: Expected {EMBEDDING_DIMENSION}, got {actual_dimensions}")
-                print(f"LOG: Recreating collection with correct dimensions...")
-                
-                # Delete and recreate the collection
-                self.qdrant_client.delete_collection(COLLECTION_NAME)
-                self.qdrant_client.recreate_collection(
-                    collection_name=COLLECTION_NAME,
-                    vectors_config=models.VectorParams(
-                        size=EMBEDDING_DIMENSION,
-                        distance=models.Distance.COSINE
-                    )
-                )
-                print("LOG: Collection recreated successfully")
-            
-        except Exception:
-            print(f"LOG: Creating collection '{COLLECTION_NAME}'...")
-            self.qdrant_client.recreate_collection(
-                collection_name=COLLECTION_NAME,
-                vectors_config=models.VectorParams(
-                    size=EMBEDDING_DIMENSION,
-                    distance=models.Distance.COSINE
-                )
-            )
-            print("LOG: Collection created successfully")
-
-    def _get_embedding(self, text: str) -> List[float]:
-        """Get embedding from OpenAI API"""
-        try:
-            response = self.openai_client.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=text
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            print(f"LOG: Error getting embedding: {e}")
-            # Return a zero vector as fallback
-            return [0.0] * EMBEDDING_DIMENSION
 
     def _create_text_chunks(self, text: str, filename: str) -> List[Dict[str, Any]]:
         """Split text into overlapping chunks with metadata."""
@@ -149,7 +96,7 @@ class Data:
         return chunks
 
     def _populate_collection(self):
-        """Populate the Qdrant collection with PDF chunks."""
+        """Populate the Qdrant collection with PDF chunks using client.add()."""
         print("LOG: Starting collection population...")
         
         # Count total chunks to be inserted
@@ -161,53 +108,41 @@ class Data:
         if not all_chunks:
             print("LOG: No chunks to insert")
             return
+        
+        # Process chunks in batches
+        for i in range(0, len(all_chunks), BATCH_SIZE):
+            batch = all_chunks[i:i + BATCH_SIZE]
             
-        try:
-            # Get existing points count
-            collection_info = self.qdrant_client.get_collection(COLLECTION_NAME)
-            if collection_info.points_count >= len(all_chunks):
-                print("LOG: Collection already populated with sufficient chunks")
-                return
-        except Exception as e:
-            print(f"LOG: Error checking collection: {e}")
-        
-        # Prepare points for insertion
-        points = []
-        for i, chunk in enumerate(all_chunks):
             try:
-                # Get embedding from OpenAI for the chunk text
-                vector = self._get_embedding(chunk['text'])
+                # Prepare data for client.add()
+                documents = []
+                metadata_list = []
+                ids = []
                 
-                # Create point ID
-                point_id = str(uuid.uuid4())
-                
-                # Create point with metadata and text content
-                payload = chunk['metadata'].copy()  # Start with metadata
-                payload['text'] = chunk['text']     # Add the actual text content
-                
-                points.append(models.PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload=payload  # Include both metadata and text content
-                ))
-                
-                if (i + 1) % BATCH_SIZE == 0:
-                    print(f"LOG: Processed {i + 1}/{len(all_chunks)} chunks...")
+                for chunk in batch:
+                    # Extract text for embedding
+                    documents.append(chunk['text'])
                     
-            except Exception as e:
-                print(f"LOG: Error processing chunk {i}: {e}")
-        
-        # Insert points in batches
-        for i in range(0, len(points), BATCH_SIZE):
-            batch = points[i:i + BATCH_SIZE]
-            try:
-                self.qdrant_client.upsert(
+                    # Prepare metadata
+                    metadata = chunk['metadata'].copy()
+                    metadata_list.append(metadata)
+                    
+                    # Create unique ID
+                    ids.append(str(uuid.uuid4()))
+                
+                # Use client.add() to handle embedding and insertion
+                print(f"LOG: Adding batch {i//BATCH_SIZE + 1} of {(len(all_chunks)-1)//BATCH_SIZE + 1}")
+                self.qdrant_client.add(
                     collection_name=COLLECTION_NAME,
-                    points=batch
+                    documents=documents,
+                    metadata=metadata_list,
                 )
-                print(f"LOG: Inserted batch {i//BATCH_SIZE + 1} of {(len(points)-1)//BATCH_SIZE + 1}")
+                
+                print(f"LOG: Successfully inserted batch {i//BATCH_SIZE + 1}")
+                
             except Exception as e:
-                print(f"LOG: Error inserting batch: {e}")
+                print(f"LOG: Error inserting batch starting at index {i}: {e}")
+                print(f"LOG: Will try to continue with next batch...")
         
         print("LOG: Collection population complete")
 
@@ -253,36 +188,6 @@ class Data:
             print(f"LOG: Error extracting text from PDF {file_path}: {e}")
             return ""
 
-    def _check_qdrant_status(self):
-        """Check if PDF document chunks are properly indexed in Qdrant."""
-        try:
-            # Count total chunks
-            total_chunks = 0
-            for pdf_doc in self.pdf_documents:
-                chunks = self._create_text_chunks(pdf_doc['content'], pdf_doc['filename'])
-                total_chunks += len(chunks)
-            
-            # Get collection info
-            print(f"LOG: Connecting to Qdrant at: {os.getenv('qdrantUrl')}")
-            collection_info = self.qdrant_client.get_collection(COLLECTION_NAME)
-            points_count = collection_info.points_count
-            
-            print(f"LOG: Qdrant collection status:")
-            print(f"LOG: - Total points in collection: {points_count}")
-            print(f"LOG: - Total PDF chunks expected: {total_chunks}")
-            
-            if points_count < total_chunks:
-                print("LOG: WARNING - Some PDF chunks may not be indexed in Qdrant!")
-                print("LOG: Run the indexing script to ensure all chunks are searchable.")
-            elif points_count > total_chunks:
-                print("LOG: WARNING - More points in Qdrant than expected chunks!")
-                print("LOG: Collection may contain outdated or duplicate entries.")
-            else:
-                print("LOG: ✓ Qdrant collection is in sync with expected chunks")
-                
-        except Exception as e:
-            print(f"LOG: Error checking Qdrant status: {e}")
-            print("LOG: WARNING - Qdrant collection may not be properly configured!")
 
 if __name__ == "__main__":
     print("LOG: Running Data loader...")

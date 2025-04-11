@@ -1,6 +1,3 @@
 PyPDF2
 qdrant-client[fastembed]
-sentence_transformers
 python-dotenv
-openai
-fastembed
