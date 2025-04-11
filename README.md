@@ -27,8 +27,8 @@ This is a proof of concept for Retrieval Augmented Generation (RAG) using PDF do
    ```
 3. Create a `.env` file with your API keys:
    ```
-   qdrantUrl=your_qdrant_url
-   qdrantApiKey=your_qdrant_api_key
+   QDRANT_URL=your_qdrant_url
+   QDRANT_API_KEY=your_qdrant_api_key
    ```
 4. Place PDF documents in the `data/` directory
 
@@ -39,11 +39,11 @@ This is a proof of concept for Retrieval Augmented Generation (RAG) using PDF do
 To process and index documents with the local FastEmbed model:
 
 ```
-python data_loader_fastembed.py
+python data_loader.py
 ```
 
 To query indexed documents with FastEmbed:
 
 ```
-python main_fastembed.py "your search query"
+python main.py "What are the side effects of lung surgery?"
 ```
