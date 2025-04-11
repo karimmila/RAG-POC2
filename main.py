@@ -32,8 +32,8 @@ class QdrantSearcher:
             # Initialize Qdrant client
             client_start = time.time()
             self.qdrant_client = QdrantClient(
-                url=os.getenv('qdrantUrl'),
-                api_key=os.getenv('qdrantApiKey')
+                url=os.getenv('QDRANT_URL'),
+                api_key=os.getenv('QDRANT_API_KEY')
             )
             client_time = time.time() - client_start
             print(f"LOG: Qdrant client initialized in {client_time:.4f} seconds")
